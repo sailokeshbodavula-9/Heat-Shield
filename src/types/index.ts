@@ -285,3 +285,16 @@ export interface AppSettings {
   hazard_high_c: number;
   language: 'en_hi' | 'en' | 'en_kn';
 }
+
+export interface UserLocationDetails {
+  lat: number;
+  lon: number;
+  placeName: string;
+  fullAddress: string;
+  cityName: string;
+  stateName?: string;
+  postcode?: string;
+  isInsideIndia: boolean;
+  accuracyMeters?: number;
+}
+

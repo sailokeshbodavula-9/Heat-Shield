@@ -4,7 +4,7 @@
  */
 
 import React from 'react';
-import { X, Thermometer, TreePine, Building, ShieldAlert, Sparkles, MapPin, AlertCircle } from 'lucide-react';
+import { X, Thermometer, TreePine, Building, ShieldAlert, Sparkles, MapPin, AlertCircle, Navigation } from 'lucide-react';
 import { DayForecast, RiskResult, Ward } from '../types/index.ts';
 
 interface WardDrawerProps {
@@ -20,6 +20,8 @@ interface WardDrawerProps {
   geeEmissivity?: number | null;
   sentinelTreeCover?: number | null;
   sentinelNdvi?: number | null;
+  isUserLocation?: boolean;
+  userPlaceName?: string;
 }
 
 const RISK_BADGES = {
@@ -42,6 +44,8 @@ export const WardDrawer: React.FC<WardDrawerProps> = ({
   geeEmissivity,
   sentinelTreeCover,
   sentinelNdvi,
+  isUserLocation = false,
+  userPlaceName,
 }) => {
   if (!ward) return null;
 
@@ -85,6 +89,16 @@ export const WardDrawer: React.FC<WardDrawerProps> = ({
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {/* User Current Location Banner if matched */}
+        {isUserLocation && (
+          <div className="p-2.5 rounded-xl bg-blue-600/20 border border-blue-500/40 flex items-center gap-2 text-xs text-blue-300 font-mono shadow-sm">
+            <Navigation className="w-4 h-4 text-blue-400 shrink-0" />
+            <div className="truncate">
+              <span className="font-bold uppercase tracking-wider block text-[10px] text-blue-400">Your Current Location</span>
+              <span className="text-white text-xs font-semibold">{userPlaceName || 'Active GPS Sector'}</span>
+            </div>
+          </div>
+        )}
         {/* Risk Score Summary Card */}
         <div className="p-3.5 rounded-xl bg-slate-800/40 border border-slate-700/50">
           <div className="flex items-center justify-between mb-2">

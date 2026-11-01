@@ -16,8 +16,9 @@ import {
   Flame,
   Shield,
   Maximize2,
+  Navigation,
 } from 'lucide-react';
-import { CentrePlacement, RiskResult, Site, Ward } from '../types/index.ts';
+import { CentrePlacement, RiskResult, Site, UserLocationDetails, Ward } from '../types/index.ts';
 
 interface MapProps {
   wards: Ward[];
@@ -31,6 +32,10 @@ interface MapProps {
   selectedWardId: string | null;
   radiusKm: number;
   cityCenter: [number, number];
+  userLocation?: UserLocationDetails | null;
+  onLocateUser?: () => void;
+  isLocatingUser?: boolean;
+  onOpenLocationDetails?: () => void;
 }
 
 const RISK_COLORS = {
@@ -52,6 +57,10 @@ export const MapView: React.FC<MapProps> = ({
   selectedWardId,
   radiusKm,
   cityCenter,
+  userLocation,
+  onLocateUser,
+  isLocatingUser = false,
+  onOpenLocationDetails,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
@@ -62,6 +71,7 @@ export const MapView: React.FC<MapProps> = ({
   const candidateSitesGroupRef = useRef<L.LayerGroup | null>(null);
   const selectedCentresGroupRef = useRef<L.LayerGroup | null>(null);
   const radiusCirclesGroupRef = useRef<L.LayerGroup | null>(null);
+  const userLocationGroupRef = useRef<L.LayerGroup | null>(null);
 
   // Layer Toggles
   const [showRiskLayer, setShowRiskLayer] = useState(true);
@@ -105,6 +115,7 @@ export const MapView: React.FC<MapProps> = ({
     candidateSitesGroupRef.current = L.layerGroup().addTo(map);
     selectedCentresGroupRef.current = L.layerGroup().addTo(map);
     radiusCirclesGroupRef.current = L.layerGroup().addTo(map);
+    userLocationGroupRef.current = L.layerGroup().addTo(map);
 
     mapInstanceRef.current = map;
 
@@ -342,6 +353,65 @@ export const MapView: React.FC<MapProps> = ({
     }
   }, [candidateSites, selectedCentres, showCandidateSites, showSelectedCentres, radiusKm]);
 
+  // Render User Location Pulsing Marker & Accuracy Circle
+  useEffect(() => {
+    if (!mapInstanceRef.current || !userLocationGroupRef.current) return;
+
+    userLocationGroupRef.current.clearLayers();
+
+    if (!userLocation) return;
+
+    // Draw accuracy circle
+    const accuracy = Math.max(40, userLocation.accuracyMeters || 80);
+    const circle = L.circle([userLocation.lat, userLocation.lon], {
+      radius: accuracy,
+      color: '#3B82F6',
+      weight: 1.5,
+      fillColor: '#3B82F6',
+      fillOpacity: 0.12,
+      dashArray: '3, 4',
+    });
+    circle.bindTooltip(`GPS Accuracy: ±${Math.round(accuracy)}m`, { sticky: true });
+    userLocationGroupRef.current.addLayer(circle);
+
+    // Pulsing custom marker
+    const pulseIcon = L.divIcon({
+      html: `
+        <div style="position:relative;width:28px;height:28px;cursor:pointer;">
+          <div style="position:absolute;inset:0;background:#3B82F6;border-radius:50%;animation:ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;opacity:0.6;"></div>
+          <div style="position:relative;width:28px;height:28px;background:#2563EB;border:3px solid #FFFFFF;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.5);">
+            <div style="width:8px;height:8px;background:#FFFFFF;border-radius:50%;"></div>
+          </div>
+        </div>
+      `,
+      className: 'user-location-pin',
+      iconSize: [28, 28],
+      iconAnchor: [14, 14],
+    });
+
+    const marker = L.marker([userLocation.lat, userLocation.lon], { icon: pulseIcon });
+    marker.bindTooltip(
+      `<div style="font-family:sans-serif;padding:6px;min-width:180px;background:#121821;color:#fff;border-radius:8px;border:1px solid #3B82F6;">
+        <div style="font-weight:bold;font-size:11px;color:#60A5FA;">📍 You Are Here</div>
+        <div style="font-size:11px;margin-top:2px;font-weight:600;">${userLocation.placeName}</div>
+        <div style="font-size:10px;color:#94a3b8;margin-top:2px;">${userLocation.fullAddress}</div>
+        <div style="font-size:9px;color:#34D399;margin-top:4px;">Click to view all heat &amp; safety details →</div>
+      </div>`,
+      { direction: 'top', className: 'heatshield-custom-tooltip' }
+    );
+
+    marker.on('click', () => {
+      if (onOpenLocationDetails) {
+        onOpenLocationDetails();
+      }
+    });
+
+    userLocationGroupRef.current.addLayer(marker);
+
+    // Fly to user location
+    mapInstanceRef.current.flyTo([userLocation.lat, userLocation.lon], 14, { duration: 1.0 });
+  }, [userLocation, onOpenLocationDetails]);
+
   return (
     <div className="relative w-full h-full min-h-[460px] flex flex-col bg-slate-900 overflow-hidden">
       {/* Map Container */}
@@ -437,6 +507,23 @@ export const MapView: React.FC<MapProps> = ({
             <Layers className="w-3 h-3 text-cyan-400" />
             <span>{basemapStyle === 'canvas' ? 'Dark Canvas' : 'OpenStreetMap'}</span>
           </button>
+
+          {/* Locate Me Map Button */}
+          {onLocateUser && (
+            <button
+              onClick={onLocateUser}
+              disabled={isLocatingUser}
+              className={`px-2 py-0.5 rounded text-[11px] font-medium transition flex items-center gap-1 border ${
+                userLocation
+                  ? 'bg-blue-600 text-white border-blue-500 shadow-sm'
+                  : 'bg-slate-800 text-slate-300 hover:text-white border-slate-700'
+              }`}
+              title="Locate my position in this city"
+            >
+              <Navigation className={`w-3 h-3 ${isLocatingUser ? 'animate-spin text-blue-300' : 'text-blue-400'}`} />
+              <span>{isLocatingUser ? 'Locating...' : 'Locate Me'}</span>
+            </button>
+          )}
 
           {/* With / Without Plan Toggle */}
           <button

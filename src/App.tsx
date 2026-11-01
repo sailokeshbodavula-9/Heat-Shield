@@ -30,10 +30,11 @@ import type {
   SourceId,
   SourceStatus,
   TraceStep,
+  UserLocationDetails,
   Ward,
 } from './types/index.ts';
 
-import { searchCity, GeocodingResult } from './services/geocoding.ts';
+import { searchCity, GeocodingResult, reverseGeocodeLocation } from './services/geocoding.ts';
 import { loadWards } from './services/wards.ts';
 import { fetchForecastForWards, WeatherResult } from './services/weather.ts';
 import { fetchCandidateSites } from './services/places.ts';
@@ -45,6 +46,8 @@ import { getCityEnsoProfile } from './services/ensoService.ts';
 import { fetchCityAiRecommendations } from './services/aiRecommendationsService.ts';
 import { calculateWardRisks } from './engine/risk.ts';
 import { fetchCityGridDemand } from './services/demandService.ts';
+import { haversineDistanceKm } from './engine/haversine.ts';
+import { LocationDetailsModal } from './components/LocationDetailsModal.tsx';
 import { runPlanningAgent } from './agent/agentLoop.ts';
 import { ToolContext } from './agent/tools.ts';
 
@@ -105,6 +108,11 @@ export default function App() {
 
   // Selected Ward Drawer
   const [selectedWardId, setSelectedWardId] = useState<string | null>(null);
+
+  // User Current Location State
+  const [userLocation, setUserLocation] = useState<UserLocationDetails | null>(null);
+  const [isLocatingUser, setIsLocatingUser] = useState<boolean>(false);
+  const [isLocationModalOpen, setIsLocationModalOpen] = useState<boolean>(false);
 
   // Live City El Niño Profile (NOAA CPC Niño-3.4 + Regional Teleconnection)
   const cityEnsoProfile = useMemo<CityEnsoProfile>(
@@ -432,6 +440,116 @@ export default function App() {
     setIsPlanStale(false);
   };
 
+  // Nearest Designated Cooling Shelter to user's location
+  const nearestCenterToUser = useMemo(() => {
+    if (!userLocation || candidateSites.length === 0) return null;
+    let nearest: Site | null = null;
+    let minDist = 999999;
+    for (const s of candidateSites) {
+      const d = haversineDistanceKm(userLocation.lat, userLocation.lon, s.lat, s.lon);
+      if (d < minDist) {
+        minDist = d;
+        nearest = s;
+      }
+    }
+    return nearest ? { site: nearest, distanceKm: minDist } : null;
+  }, [userLocation, candidateSites]);
+
+  // User location ward & risk profile
+  const userWard = useMemo(() => {
+    if (!userLocation || wards.length === 0) return null;
+    let closestWard = wards[0];
+    let minDist = 999999;
+    for (const w of wards) {
+      const dist = haversineDistanceKm(userLocation.lat, userLocation.lon, w.centroid_lat, w.centroid_lon);
+      if (dist < minDist) {
+        minDist = dist;
+        closestWard = w;
+      }
+    }
+    return closestWard;
+  }, [userLocation, wards]);
+
+  const userWardRisk = useMemo(() => {
+    if (!userWard) return null;
+    return wardRisks.find((r) => r.ward_id === userWard.ward_id) || null;
+  }, [userWard, wardRisks]);
+
+  // Locate User & Show Place Details in City
+  const handleLocateUser = () => {
+    if (!navigator.geolocation) {
+      alert('Geolocation is not supported by your browser.');
+      return;
+    }
+
+    setIsLocatingUser(true);
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        try {
+          const { latitude, longitude, accuracy } = position.coords;
+          const details = await reverseGeocodeLocation(latitude, longitude, accuracy);
+          setUserLocation(details);
+
+          // If user's city differs from current city, automatically switch city!
+          if (details.cityName && details.cityName.toLowerCase() !== currentCityName.toLowerCase()) {
+            const latDelta = 0.06;
+            const lonDelta = 0.06;
+            const newCity: GeocodingResult = {
+              id: Math.round(latitude * 1000 + longitude * 1000),
+              name: details.cityName,
+              latitude,
+              longitude,
+              country: 'India',
+              admin1: details.stateName || 'India',
+              bbox: [latitude - latDelta, longitude - lonDelta, latitude + latDelta, longitude + lonDelta],
+            };
+            handleSelectCity(newCity);
+          } else {
+            // Center on user coords
+            setCityCenter([latitude, longitude]);
+          }
+
+          // Automatically select the user's ward and open the place details modal
+          setTimeout(() => {
+            if (wards.length > 0) {
+              let targetWard = wards[0];
+              let minDist = 999999;
+              for (const w of wards) {
+                const dist = haversineDistanceKm(latitude, longitude, w.centroid_lat, w.centroid_lon);
+                if (dist < minDist) {
+                  minDist = dist;
+                  targetWard = w;
+                }
+              }
+              if (targetWard) {
+                setSelectedWardId(targetWard.ward_id);
+              }
+            }
+            setIsLocationModalOpen(true);
+          }, 400);
+        } catch (err: any) {
+          console.error('Error reverse geocoding location:', err);
+        } finally {
+          setIsLocatingUser(false);
+        }
+      },
+      (err) => {
+        setIsLocatingUser(false);
+        console.warn('Geolocation error:', err.message);
+        if (err.code === 1) {
+          alert('Location permission was denied. Please allow location access in your browser or search for your Indian city.');
+        } else {
+          alert('Unable to retrieve current location. Please select your Indian city from the directory.');
+        }
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 60000,
+      }
+    );
+  };
+
   // Toggle Scenario: Live vs +2 °C Stress test (F9, L2)
   const handleToggleScenario = (newScenario: Scenario) => {
     setScenario(newScenario);
@@ -666,6 +784,10 @@ export default function App() {
         onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
         onOpenSettings={() => setIsSettingsOpen(true)}
         isLoadingCity={isLoadingCity}
+        onLocateUser={handleLocateUser}
+        isLocatingUser={isLocatingUser}
+        userLocation={userLocation}
+        onOpenLocationDetails={() => setIsLocationModalOpen(true)}
       />
 
       {/* Hero Strip with Run Planner, El Niño Climate Alert & 3 KPI Cards */}
@@ -713,6 +835,10 @@ export default function App() {
             selectedWardId={selectedWardId}
             radiusKm={settings.radius_km}
             cityCenter={cityCenter}
+            userLocation={userLocation}
+            onLocateUser={handleLocateUser}
+            isLocatingUser={isLocatingUser}
+            onOpenLocationDetails={() => setIsLocationModalOpen(true)}
           />
 
           {/* Clicked Ward Breakdown Drawer */}
@@ -729,6 +855,8 @@ export default function App() {
             geeEmissivity={selectedWardId ? earthEngineData?.emissivityByWard.get(selectedWardId) ?? null : null}
             sentinelTreeCover={selectedWardId ? sentinelData?.treeCoverByWard.get(selectedWardId) ?? null : null}
             sentinelNdvi={selectedWardId ? sentinelData?.ndviByWard.get(selectedWardId) ?? null : null}
+            isUserLocation={Boolean(userLocation && userWard && selectedWardId === userWard.ward_id)}
+            userPlaceName={userLocation?.placeName}
           />
         </div>
 
@@ -892,6 +1020,29 @@ export default function App() {
           if (currentPlan) setIsPlanStale(true);
         }}
         theme={theme}
+      />
+
+      {/* Current User Location Place Details Modal */}
+      <LocationDetailsModal
+        isOpen={isLocationModalOpen}
+        onClose={() => setIsLocationModalOpen(false)}
+        location={userLocation}
+        ward={userWard}
+        risk={userWardRisk}
+        nearestCenter={nearestCenterToUser}
+        demandForecast={demandForecast}
+        weatherPeakApparent={weatherData?.peakApparentOverall || 38.5}
+        theme={theme}
+        onViewWardDetails={() => {
+          if (userWard) {
+            setSelectedWardId(userWard.ward_id);
+          }
+        }}
+        onCenterOnMap={() => {
+          if (userLocation) {
+            setCityCenter([userLocation.lat, userLocation.lon]);
+          }
+        }}
       />
     </div>
   );

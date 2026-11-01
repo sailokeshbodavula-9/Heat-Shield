@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { UserLocationDetails } from '../types/index.ts';
+
 export interface GeocodingResult {
   id: number;
   name: string;
@@ -506,4 +508,100 @@ export async function searchCity(query: string): Promise<GeocodingResult[]> {
   }
 
   return combined;
+}
+
+/**
+ * Reverse geocodes coordinates to identify exact place, locality, and city within India.
+ */
+export async function reverseGeocodeLocation(
+  lat: number,
+  lon: number,
+  accuracyMeters?: number
+): Promise<UserLocationDetails> {
+  const isInsideIndia = isWithinIndiaBounds(lat, lon);
+
+  // Find closest city in INDIAN_CITIES_CATALOG
+  let closest = INDIAN_CITIES_CATALOG[0];
+  let minDistance = 999999;
+  for (const c of INDIAN_CITIES_CATALOG) {
+    const dist = Math.hypot(c.latitude - lat, c.longitude - lon);
+    if (dist < minDistance) {
+      minDistance = dist;
+      closest = c;
+    }
+  }
+
+  // Attempt Nominatim reverse geocode
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=18&addressdetails=1`;
+    const resp = await fetch(url, {
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'HeatShield-App-India/1.0',
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (resp.ok) {
+      const data = await resp.json();
+      const addr = data.address || {};
+
+      const locality =
+        addr.suburb ||
+        addr.neighbourhood ||
+        addr.residential ||
+        addr.commercial ||
+        addr.industrial ||
+        addr.village ||
+        addr.road ||
+        addr.city_district ||
+        'Local Area';
+
+      const resolvedCity =
+        addr.city ||
+        addr.town ||
+        addr.municipality ||
+        addr.county ||
+        addr.state_district ||
+        closest.name;
+
+      const stateName = addr.state || closest.admin1 || 'India';
+      const postcode = addr.postcode || undefined;
+
+      const placeName = `${locality}, ${resolvedCity}`;
+      const fullAddress = data.display_name || `${placeName}, ${stateName}, India`;
+
+      return {
+        lat,
+        lon,
+        placeName,
+        fullAddress,
+        cityName: resolvedCity,
+        stateName,
+        postcode,
+        isInsideIndia,
+        accuracyMeters: accuracyMeters ? Math.round(accuracyMeters) : undefined,
+      };
+    }
+  } catch (err) {
+    console.warn('Nominatim reverse geocode error:', err);
+  }
+
+  // Fallback to closest Indian city in catalog
+  const placeName = `Current Sector, ${closest.name}`;
+  const fullAddress = `${placeName}, ${closest.admin1}, India`;
+
+  return {
+    lat,
+    lon,
+    placeName,
+    fullAddress,
+    cityName: closest.name,
+    stateName: closest.admin1,
+    isInsideIndia,
+    accuracyMeters: accuracyMeters ? Math.round(accuracyMeters) : undefined,
+  };
 }
