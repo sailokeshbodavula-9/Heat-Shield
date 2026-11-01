@@ -48,6 +48,12 @@ import { calculateWardRisks } from './engine/risk.ts';
 import { fetchCityGridDemand } from './services/demandService.ts';
 import { haversineDistanceKm } from './engine/haversine.ts';
 import { LocationDetailsModal } from './components/LocationDetailsModal.tsx';
+import {
+  HeatAlert,
+  playEmergencyAlertSound,
+  sendDesktopNotification,
+} from './services/notificationService.ts';
+import { SevereAlertBanner } from './components/SevereAlertBanner.tsx';
 import { runPlanningAgent } from './agent/agentLoop.ts';
 import { ToolContext } from './agent/tools.ts';
 
@@ -113,6 +119,11 @@ export default function App() {
   const [userLocation, setUserLocation] = useState<UserLocationDetails | null>(null);
   const [isLocatingUser, setIsLocatingUser] = useState<boolean>(false);
   const [isLocationModalOpen, setIsLocationModalOpen] = useState<boolean>(false);
+
+  // Severe Condition Notification State
+  const [activeSevereAlert, setActiveSevereAlert] = useState<HeatAlert | null>(null);
+  const [isAlertDismissed, setIsAlertDismissed] = useState<boolean>(false);
+  const [isMuted, setIsMuted] = useState<boolean>(false);
 
   // Live City El Niño Profile (NOAA CPC Niño-3.4 + Regional Teleconnection)
   const cityEnsoProfile = useMemo<CityEnsoProfile>(
@@ -550,6 +561,84 @@ export default function App() {
     );
   };
 
+  // Automatically trigger notification whenever user's area is in severe condition
+  useEffect(() => {
+    if (!userLocation || !userWard || !userWardRisk) return;
+
+    // Check if user's area risk is severe (threshold >= 75 or risk_class severe)
+    const isSevere = userWardRisk.risk_class === 'severe' || userWardRisk.risk_score >= 75.0;
+
+    if (isSevere) {
+      const apparentTemp = weatherData
+        ? scenario === 'stress_plus_2c'
+          ? weatherData.peakApparentOverall + cityEnsoProfile.cityProjectedSurgeC
+          : weatherData.peakApparentOverall
+        : 42.5;
+
+      const alertObj: HeatAlert = {
+        id: `severe_${userLocation.lat}_${userLocation.lon}_${Date.now()}`,
+        timestamp: new Date().toLocaleTimeString(),
+        title: `🚨 SEVERE HEAT EMERGENCY: ${userLocation.placeName}`,
+        placeName: userLocation.placeName,
+        cityName: userLocation.cityName,
+        riskScore: userWardRisk.risk_score,
+        apparentTempC: apparentTemp,
+        nearestFacilityName: nearestCenterToUser?.site.name || 'Local Public Facility',
+        nearestFacilityDistanceKm: nearestCenterToUser?.distanceKm,
+        stressHours: demandForecast
+          ? `${demandForecast.stress_window.start_hour}:00 – ${demandForecast.stress_window.end_hour}:00`
+          : '12:00 – 16:30',
+        read: false,
+      };
+
+      setActiveSevereAlert(alertObj);
+      setIsAlertDismissed(false);
+
+      // Play audible emergency chime (if not muted)
+      if (!isMuted) {
+        playEmergencyAlertSound();
+      }
+
+      // Dispatch browser desktop notification
+      sendDesktopNotification(
+        `🔥 SEVERE HEAT ALERT: ${userLocation.placeName}`,
+        `Critical heat emergency detected in your area! Risk Score: ${userWardRisk.risk_score.toFixed(1)}/100 (${apparentTemp.toFixed(1)}°C feels-like). Click to view cooling centres & immediate safety directives.`
+      );
+    } else {
+      setActiveSevereAlert(null);
+    }
+  }, [userLocation, userWard, userWardRisk, scenario, weatherData, demandForecast, cityEnsoProfile, nearestCenterToUser, isMuted]);
+
+  // Manual Test Trigger for Severe Heat Notification
+  const handleTestSevereAlert = () => {
+    const testPlace = userLocation?.placeName || `${currentCityName} Urban Sector`;
+    const testAlert: HeatAlert = {
+      id: `test_severe_${Date.now()}`,
+      timestamp: new Date().toLocaleTimeString(),
+      title: `🚨 TEST: SEVERE HEAT ALERT: ${testPlace}`,
+      placeName: testPlace,
+      cityName: currentCityName,
+      riskScore: 84.6,
+      apparentTempC: 43.2,
+      nearestFacilityName: candidateSites[0]?.name || 'Government Higher Secondary School',
+      nearestFacilityDistanceKm: 0.42,
+      stressHours: '12:00 – 16:30',
+      read: false,
+    };
+
+    setActiveSevereAlert(testAlert);
+    setIsAlertDismissed(false);
+
+    if (!isMuted) {
+      playEmergencyAlertSound();
+    }
+
+    sendDesktopNotification(
+      `🔥 SEVERE HEAT ALERT: ${testPlace}`,
+      `[SIMULATION] Your area has entered SEVERE heat conditions (Score: 84.6/100, 43.2°C feels-like). Immediate hydration & shade precautions required.`
+    );
+  };
+
   // Toggle Scenario: Live vs +2 °C Stress test (F9, L2)
   const handleToggleScenario = (newScenario: Scenario) => {
     setScenario(newScenario);
@@ -788,6 +877,11 @@ export default function App() {
         isLocatingUser={isLocatingUser}
         userLocation={userLocation}
         onOpenLocationDetails={() => setIsLocationModalOpen(true)}
+        activeAlert={activeSevereAlert}
+        onOpenAlert={() => setIsLocationModalOpen(true)}
+        onTestAlert={handleTestSevereAlert}
+        isMuted={isMuted}
+        onToggleMute={() => setIsMuted(!isMuted)}
       />
 
       {/* Hero Strip with Run Planner, El Niño Climate Alert & 3 KPI Cards */}
@@ -1044,6 +1138,22 @@ export default function App() {
           }
         }}
       />
+
+      {/* Severe Heat Emergency Notification Banner for User's Area */}
+      {!isAlertDismissed && activeSevereAlert && (
+        <SevereAlertBanner
+          alert={activeSevereAlert}
+          onDismiss={() => setIsAlertDismissed(true)}
+          onViewDetails={() => setIsLocationModalOpen(true)}
+          onLocateShelter={() => {
+            if (nearestCenterToUser) {
+              setCityCenter([nearestCenterToUser.site.lat, nearestCenterToUser.site.lon]);
+            }
+          }}
+          isMuted={isMuted}
+          onToggleMute={() => setIsMuted(!isMuted)}
+        />
+      )}
     </div>
   );
 }
